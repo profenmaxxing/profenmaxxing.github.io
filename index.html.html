@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HTML Chess — Smarter Bot</title>
+  <style>
+    :root{--sq-size:64px}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;display:flex;gap:24px;padding:24px}
+    .board{display:grid;grid-template-columns:repeat(8,var(--sq-size));grid-template-rows:repeat(8,var(--sq-size));border-radius:8px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.15)}
+    .square{width:var(--sq-size);height:var(--sq-size);display:flex;align-items:center;justify-content:center;font-size:32px;cursor:pointer;user-select:none}
+    .light{background:#f0d9b5}
+    .dark{background:#b58863}
+    .square.highlight{outline:4px solid rgba(255,255,0,.6)}
+    .panel{margin-left:18px}
+    button{padding:6px 10px;border-radius:6px;border:1px solid #ddd;background:#fafafa;cursor:pointer}
+  </style>
+</head>
+<body>
+  <div id="board" class="board"></div>
+  <div class="panel">
+    <h3>Status: <span id="status">White to move</span></h3>
+    <div style="margin-top:8px">
+      <button id="undo">Undo</button>
+      <button id="reset">Reset</button>
+      <label style="margin-left:8px">Bot strength:
+        <select id="strength"><option value="0">Random</option><option value="1">Depth 1</option><option value="2" selected>Depth 2</option></select>
+      </label>
+    </div>
+    <div style="margin-top:12px">Notes: Bot now avoids illegal moves that leave its king in check, promotes pawns to queen, and uses a small minimax search to choose better moves at higher strengths.</div>
+  </div>
+
+  <script>
+    const boardEl=document.getElementById('board');
+    const statusEl=document.getElementById('status');
+    const resetBtn=document.getElementById('reset');
+    const undoBtn=document.getElementById('undo');
+    const strengthSel=document.getElementById('strength');
+
+    const pieceToUnicode={wK:'♔',wQ:'♕',wR:'♖',wB:'♗',wN:'♘',wP:'♙',bK:'♚',bQ:'♛',bR:'♜',bB:'♝',bN:'♞',bP:'♟'};
+
+    const initial=[
+      ['bR','bN','bB','bQ','bK','bB','bN','bR'],
+      ['bP','bP','bP','bP','bP','bP','bP','bP'],
+      ['','','','','','','',''],
+      ['','','','','','','',''],
+      ['','','','','','','',''],
+      ['','','','','','','',''],
+      ['wP','wP','wP','wP','wP','wP','wP','wP'],
+      ['wR','wN','wB','wQ','wK','wB','wN','wR']
+    ];
+
+    let board=JSON.parse(JSON.stringify(initial));
+    let turn='w';
+    let selected=null;
+    let history=[];
+
+    function inBounds(r,c){return r>=0&&r<8&&c>=0&&c<8;}
+    function cloneBoard(b){return b.map(r=>r.slice());}
+
+    function findKing(b,color){for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(b[r][c]===color+'K')return [r,c];return null;}
+
+    // if king missing, treat as 'in check' (prevents capturing the king as legal move)
+    function isSquareAttacked(b,r,c,attackerColor){
+      const dirs=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+      // Pawns
+      const pawnDir=attackerColor==='w'?-1:1;
+      for(const dc of[-1,1]){const rr=r+pawnDir,cc=c+dc;if(inBounds(rr,cc)&&b[rr][cc]===attackerColor+'P')return true;}
+      // Knights
+      const knights=[[2,1],[1,2],[-1,2],[-2,1],[-2,-1],[-1,-2],[1,-2],[2,-1]];
+      for(const [dr,dc] of knights){const rr=r+dr,cc=c+dc;if(inBounds(rr,cc)&&b[rr][cc]===attackerColor+'N')return true;}
+      // Sliding pieces
+      for(const [dr,dc] of dirs){let rr=r+dr,cc=c+dc;while(inBounds(rr,cc)){
+        const p=b[rr][cc];if(p){if(p[0]===attackerColor){const t=p[1];if((dr===0||dc===0)&&['R','Q'].includes(t))return true;if((dr!==0&&dc!==0)&&['B','Q'].includes(t))return true;}break;}rr+=dr;cc+=dc;}
+      }
+      // King
+      for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){if(!dr&&!dc)continue;const rr=r+dr,cc=c+dc;if(inBounds(rr,cc)&&b[rr][cc]===attackerColor+'K')return true;}
+      return false;
+    }
+
+    function inCheck(b,color){
+      const kingPos=findKing(b,color);
+      if(!kingPos) return true; // missing king = treated as checked (avoids allowing moves that capture king)
+      return isSquareAttacked(b,kingPos[0],kingPos[1],color==='w'?'b':'w');
+    }
+
+    function generateMoves(b,r,c){
+      const p=b[r][c];if(!p) return [];const color=p[0],type=p[1];const dir=color==='w'?-1:1;const moves=[];
+      if(type==='P'){
+        const f=r+dir; // forward
+        if(inBounds(f,c) && !b[f][c]){
+          // move one
+          moves.push([f,c]);
+          // double from start
+          const startRow = color==='w'?6:1;
+          const f2=r+2*dir;
+          if(r===startRow && inBounds(f2,c) && !b[f2][c]) moves.push([f2,c]);
+        }
+        // captures
+        for(const dc of[-1,1]){const rr=r+dir,cc=c+dc;if(inBounds(rr,cc)&&b[rr][cc]&&b[rr][cc][0]!==color) moves.push([rr,cc]);}
+      } else if(type==='N'){
+        const d=[[2,1],[1,2],[-1,2],[-2,1],[-2,-1],[-1,-2],[1,-2],[2,-1]];
+        for(const[dr,dc]of d){const rr=r+dr,cc=c+dc;if(inBounds(rr,cc)&&(!b[rr][cc]||b[rr][cc][0]!==color))moves.push([rr,cc]);}
+      } else if(['B','R','Q'].includes(type)){
+        const dirs=[];if(['B','Q'].includes(type))dirs.push([-1,-1],[-1,1],[1,-1],[1,1]);if(['R','Q'].includes(type))dirs.push([-1,0],[1,0],[0,-1],[0,1]);
+        for(const[dr,dc]of dirs){let rr=r+dr,cc=c+dc;while(inBounds(rr,cc)){if(!b[rr][cc])moves.push([rr,cc]);else{if(b[rr][cc][0]!==color) moves.push([rr,cc]);break;}rr+=dr;cc+=dc;}}
+      } else if(type==='K'){
+        for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){if(!dr&&!dc)continue;const rr=r+dr,cc=c+dc;if(inBounds(rr,cc)&&(!b[rr][cc]||b[rr][cc][0]!==color))moves.push([rr,cc]);}
+      }
+      return moves;
+    }
+
+    // Returns legal moves that don't leave player's king in check
+    function legalMoves(b,color){
+      const list=[];
+      for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+        if(b[r][c] && b[r][c][0]===color){
+          for(const [toR,toC] of generateMoves(b,r,c)){
+            const nb=cloneBoard(b);
+            nb[toR][toC]=nb[r][c]; nb[r][c]='';
+            // handle promotion in test position
+            if(nb[toR][toC][1]==='P' && (toR===0 || toR===7)) nb[toR][toC] = nb[toR][toC][0] + 'Q';
+            if(!inCheck(nb,color)) list.push({from:[r,c],to:[toR,toC],piece:b[r][c]});
+          }
+        }
+      }
+      return list;
+    }
+
+    function makeMoveOnBoard(b,from,to){
+      const [r1,c1]=from; const [r2,c2]=to;
+      b[r2][c2]=b[r1][c1]; b[r1][c1]='';
+      // promotion
+      if(b[r2][c2] && b[r2][c2][1]==='P' && (r2===0 || r2===7)) b[r2][c2] = b[r2][c2][0] + 'Q';
+    }
+
+    // wrapper to make move in current game, track history and update turn/status
+    function makeMove(from,to){
+      const prev=cloneBoard(board);
+      makeMoveOnBoard(board,from,to);
+      history.push({from,to,prev});
+      turn = (turn==='w'?'b':'w');
+      updateStatus();
+    }
+
+    function undo(){ if(history.length===0) return; const last=history.pop(); board=last.prev; turn = (turn==='w'?'b':'w'); updateStatus(); render(); }
+
+    function updateStatus(){
+      if(inCheck(board,turn)){
+        const lm = legalMoves(board,turn);
+        if(lm.length===0){ statusEl.textContent = (turn==='w'?'White':'Black') + ' is checkmated!'; return; }
+        statusEl.textContent = (turn==='w'?'White':'Black') + ' to move (in check)';
+      } else {
+        const lm = legalMoves(board,turn);
+        if(lm.length===0){ statusEl.textContent = 'Stalemate!'; return; }
+        statusEl.textContent = (turn==='w'?'White':'Black') + ' to move';
+      }
+    }
+
+    // simple material evaluation
+    const pieceValue = {K:900, Q:90, R:50, B:30, N:30, P:10};
+    function evaluate(b){
+      let s=0; for(let r=0;r<8;r++)for(let c=0;c<8;c++){const p=b[r][c]; if(!p) continue; const v = pieceValue[p[1]] || 0; s += (p[0]==='w'?1:-1)*v; } return s;
+    }
+
+    // minimax with alpha-beta, returns {score, move}
+    function minimax(b,depth,alpha,beta,isMaximizing){
+      const color = isMaximizing ? 'b' : 'w';
+      const moves = legalMoves(b, color);
+      if(depth===0 || moves.length===0){ return {score: evaluate(b)}; }
+      let bestMove = null;
+      if(isMaximizing){
+        let maxEval = -Infinity;
+        for(const m of moves){
+          const nb = cloneBoard(b);
+          makeMoveOnBoard(nb,m.from,m.to);
+          const res = minimax(nb, depth-1, alpha, beta, false);
+          if(res.score > maxEval){ maxEval = res.score; bestMove = m; }
+          alpha = Math.max(alpha, res.score);
+          if(beta <= alpha) break;
+        }
+        return {score:maxEval, move:bestMove};
+      } else {
+        let minEval = Infinity;
+        for(const m of moves){
+          const nb = cloneBoard(b);
+          makeMoveOnBoard(nb,m.from,m.to);
+          const res = minimax(nb, depth-1, alpha, beta, true);
+          if(res.score < minEval){ minEval = res.score; bestMove = m; }
+          beta = Math.min(beta, res.score);
+          if(beta <= alpha) break;
+        }
+        return {score:minEval, move:bestMove};
+      }
+    }
+
+    function botMove(){
+      const strength = parseInt(strengthSel.value,10);
+      const moves = legalMoves(board,'b');
+      if(moves.length===0) return;
+      let chosen = null;
+      if(strength===0){ chosen = moves[Math.floor(Math.random()*moves.length)]; }
+      else if(strength===1){ // depth 1: pick best immediate evaluation
+        let best=-Infinity; for(const m of moves){ const nb=cloneBoard(board); makeMoveOnBoard(nb,m.from,m.to); const v = evaluate(nb); if(v>best){best=v; chosen=m;} }
+      } else { // depth 2 minimax (bot maximizing)
+        const res = minimax(board, 2, -Infinity, Infinity, true); chosen = res.move || moves[Math.floor(Math.random()*moves.length)];
+      }
+      if(chosen){ makeMove(chosen.from, chosen.to); render(); }
+    }
+
+    function onSquareClick(e){
+      const r=parseInt(e.currentTarget.dataset.r), c=parseInt(e.currentTarget.dataset.c);
+      if(turn!=='w') return;
+      const p = board[r][c];
+      if(selected){
+        // check if desired move is in legal moves
+        const lm = legalMoves(board,'w');
+        const mv = lm.find(m=>m.from[0]===selected.r && m.from[1]===selected.c && m.to[0]===r && m.to[1]===c);
+        if(mv){ makeMove(mv.from, mv.to); selected=null; render(); setTimeout(()=>{ if(turn==='b') botMove(); }, 200); return; }
+      }
+      if(p && p[0]==='w') selected={r,c}; else selected=null;
+      render();
+    }
+
+    function render(){
+      boardEl.innerHTML='';
+      for(let r=0;r<8;r++){
+        for(let c=0;c<8;c++){
+          const sq=document.createElement('div');
+          sq.className = 'square ' + (((r+c)%2)?'dark':'light');
+          sq.dataset.r = r; sq.dataset.c = c;
+          sq.textContent = pieceToUnicode[board[r][c]] || '';
+          sq.onclick = onSquareClick;
+          if(selected && selected.r===r && selected.c===c) sq.classList.add('highlight');
+          boardEl.appendChild(sq);
+        }
+      }
+      updateStatus();
+    }
+
+    resetBtn.onclick = ()=>{ board = JSON.parse(JSON.stringify(initial)); turn='w'; selected=null; history=[]; render(); };
+    undoBtn.onclick = ()=>{ undo(); render(); };
+
+    render();
+  </script>
+</body>
+</html>
