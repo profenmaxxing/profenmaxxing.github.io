@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>Miniature Pokedex</title>
+        <style>
+            body {font-family: Arial, sans-serif; padding: 100px; color: black;}
+            main {display: grid; gap : 15px;}
+            input, button {padding : 20px; font-size: 15px;}
+        </style>
+    </head>
+    <main>
+
+        <header>
+            <nav>
+                <a href="somethingsimple.html">Main Page</a>
+            </nav>
+        </header>
+        
+        <body>
+        <h1>Info</h1>
+        <input type="text" id="pokemonname" placeholder="Enter the Pokemon Name!">
+        <button id="searchbutton">Search</button>
+
+        <h2 id="name"></h2>
+        <img id="sprite" src="" alt="" />
+        <p id="types"></p>
+
+        <script>
+            async function getPokemon() {
+                const nameInput = document.getElementById("pokemonname").value.toLowerCase()
+                const nameEl = document.getElementById("name");
+                const spriteEl = document.getElementById("sprite");
+                const typesEl = document.getElementById("types");
+
+                try {
+                    const response = await fetch(`https://pokeapi.co/api/v2/pokemon/${nameInput}`);
+                    if (!response.ok) throw new Error("Pokemon Not Found, try something new");
+                    const data = await response.json();
+
+        nameEl.innerText = data.name.charAt(0).toUpperCase() + data.name.slice(1);
+
+        spriteEl.src = data.sprites.front_default;
+        spriteEl.alt = data.name;
+
+        typesEl.innerText = "types: " + data.types.map(t => t.type.name).join(", ");
+                } catch (error) {
+                    nameEl.innerText = "Error: " + error.message;
+                    spriteEl.src = ""
+                    typesEl.innerText = ""
+                }
+            }
+            document.getElementById("searchbutton").addEventListener("click", getPokemon)
+        </script>
+    </body>
+    </main>
+</html>
